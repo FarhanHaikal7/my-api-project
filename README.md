@@ -189,9 +189,3 @@ print(response.json())
 📝 License
 
 This project is open-source and available under the MIT License.
-
-
-### How to Use This:
-1.  Create a new file in your project folder named `README.md`.
-2.  Paste the text above into it.
-3.  Push it to GitHub. This will be the front page of your repository!
