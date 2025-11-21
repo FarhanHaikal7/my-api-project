@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Predict API Portal</title>
+    <!-- 1. Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. Load Google Font (Inter) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- 3. Load Prism.js for code highlighting in docs -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" defer></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js" defer></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+
+    <!-- 4. Load Firebase SDK -->
+    <script type="module">
+        // --- Firebase SDK Imports ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            onAuthStateChanged,
+            createUserWithEmailAndPassword,
+            signInWithEmailAndPassword,
+            signOut
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            updateDoc,
+            setLogLevel
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- 1. CONFIGURATION ---
+        // !! IMPORTANT !!
+        // You MUST paste your own Firebase config object here.
+        // This is the one you got from the Firebase console.
+        const firebaseConfig = {
+            apiKey: "AIzaSyDi40Lrteh1d0SU4VQoVK4lj6bc8D9Idls", // This is your key
+            authDomain: "my-api-project-b9778.firebaseapp.com",
+            projectId: "my-api-project-b9778",
+            storageBucket: "my-api-project-b9778.firebasestorage.app",
+            messagingSenderId: "890248724941",
+            appId: "1:890248724941:web:c4761f4cf2e028d360c484",
+            measurementId: "G-301RQNLDKY"
+        };
+        
+        const appId = firebaseConfig.appId || 'default-app-id';
+        const API_SERVER_URL = "https://my-api-project-kvz4.onrender.com"; // Your Python API URL
+
+        // --- 2. GLOBAL APP VARIABLES ---
+        let auth, db;
+        let currentUserId = null;
+        let currentUserData = null; // To store API key and usage
+
+        // --- 3. UTILITY FUNCTIONS ---
+        const $ = (selector) => document.querySelector(selector);
+        const $$ = (selector) => document.querySelectorAll(selector);
+
+        // Page/View Navigation
+        function showPage(pageId) {
+            if (!$(`#${pageId}`)) {
+                console.error(`Page not found: ${pageId}`);
+                return;
+            }
+            // Hide all pages
+            $$('.page').forEach(page => page.classList.add('hidden'));
+            // Show the requested page
+            $(`#${pageId}`).classList.remove('hidden');
+
+            // Update nav link highlighting
+            $$('nav a').forEach(a => a.classList.remove('text-white', 'bg-gray-900'));
+            $$('nav a').forEach(a => a.classList.add('text-gray-300', 'hover:bg-gray-700', 'hover:text-white'));
+            const activeLink = $(`nav a[data-page="${pageId.replace('page-', '')}"]`);
+            if (activeLink) {
+                activeLink.classList.add('text-white', 'bg-gray-900');
+                activeLink.classList.remove('text-gray-300', 'hover:bg-gray-700', 'hover:text-white');
+            }
+        }
+
+        // Show a custom message modal
+        function showModal(message, isError = false) {
+            const modal = $('#message-modal');
+            const modalMessage = $('#modal-message');
+            const modalTitle = $('#modal-title');
+            
+            if (!modal || !modalMessage || !modalTitle) return; 
+
+            modalMessage.textContent = message;
+            if (isError) {
+                modalTitle.textContent = "Error";
+                modalTitle.classList.add('text-red-600');
+                modalTitle.classList.remove('text-green-600');
+            } else {
+                modalTitle.textContent = "Success";
+                modalTitle.classList.add('text-green-600');
+                modalTitle.classList.remove('text-red-600');
+            }
+            modal.classList.remove('hidden');
+        }
+
+        // Generate a random secure API key
+        function generateApiKey() {
+            const array = new Uint32Array(28);
+            window.crypto.getRandomValues(array);
+            return Array.from(array, dec => ('0' + dec.toString(16)).substr(-2)).join('');
+        }
+
+        // Copy text to clipboard
+        function copyToClipboard(text) {
+            const el = document.createElement('textarea');
+            el.value = text;
+            document.body.appendChild(el);
+            el.select();
+            try {
+                document.execCommand('copy');
+                showModal("API Key copied to clipboard!");
+            } catch (err) {
+                showModal("Failed to copy API Key.", true);
+            }
+            document.body.removeChild(el);
+        }
+
+        // --- 4. FIREBASE INITIALIZATION ---
+        async function initializeFirebase() {
+            try {
+                // Initialize app and services
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                setLogLevel('Debug'); // Enable Firestore logging
+                console.log("Firebase initialized successfully.");
+
+                // Listen for authentication state changes
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        // User is signed in
+                        console.log('User is signed in:', user.uid);
+                        currentUserId = user.uid;
+                        await loadUserData(user.uid);
+                        
+                        // Update UI for logged-in state
+                        $('#auth-nav-button').textContent = 'Log Out';
+                        $('#auth-nav-button').dataset.page = 'logout';
+                        $('#nav-dashboard-link').classList.remove('hidden');
+                        showPage('page-dashboard');
+                    } else {
+                        // User is signed out
+                        console.log('User is signed out.');
+                        currentUserId = null;
+                        currentUserData = null;
+
+                        // Update UI for logged-out state
+                        $('#auth-nav-button').textContent = 'Login / Sign Up';
+                        $('#auth-nav-button').dataset.page = 'auth';
+                        $('#nav-dashboard-link').classList.add('hidden');
+                        
+                        // Reset payment/signup form
+                        $('#payment-container').classList.remove('hidden');
+                        $('#signup-form').classList.add('hidden');
+                        $('#demo-payment-button').disabled = false;
+                        $('#demo-payment-button').textContent = 'Pay RM5.00 (Demo)';
+                        
+                        showPage('page-home');
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Init Error:", error);
+                showModal(`Firebase initialization failed: ${error.message}`, true);
+            }
+        }
+
+        // --- 5. FIRESTORE DATA LOGIC ---
+        function updateDashboardUI() {
+            if (currentUserData) {
+                $('#api-key-display').value = currentUserData.apiKey;
+                $('#api-usage-count').textContent = currentUserData.usage;
+            }
+        }
+
+        async function loadUserData(userId) {
+            if (!db) {
+                console.error("Firestore (db) not initialized.");
+                return;
+            }
+            
+            const userDocRef = doc(db, `artifacts/${appId}/users/${userId}/profile`, "data");
+            
+            try {
+                const docSnap = await getDoc(userDocRef);
+                if (docSnap.exists()) {
+                    // User data exists
+                    currentUserData = docSnap.data();
+                    console.log('User data loaded:', currentUserData);
+                } else {
+                    // No user data, create it (new user)
+                    console.log('No user data found, creating new profile...');
+                    const newApiKey = generateApiKey();
+                    currentUserData = {
+                        apiKey: newApiKey,
+                        usage: 0,
+                        plan: "pro" // <-- AUTO-ASSIGN "PRO" PLAN
+                    };
+                    await setDoc(userDocRef, currentUserData);
+                    console.log('New user profile created with Pro plan.');
+                }
+                updateDashboardUI();
+            } catch (error) {
+                console.error("Error loading user data:", error);
+                showModal(`Failed to load user data: ${error.message}`, true);
+            }
+        }
+
+        // --- 6. AUTHENTICATION LOGIC ---
+        async function handleSignup(event) {
+            event.preventDefault();
+            if (!auth) {
+                showModal("Signup error: Auth service not ready.", true);
+                return;
+            }
+            
+            const email = $('#signup-email').value;
+            const password = $('#signup-password').value;
+            const passwordConfirm = $('#signup-password-confirm').value;
+
+            if (password !== passwordConfirm) {
+                showModal("Passwords do not match.", true);
+                return;
+            }
+
+            try {
+                await createUserWithEmailAndPassword(auth, email, password);
+                // Auth listener will handle the rest (loadUserData, UI change)
+                showModal("Sign up successful! Welcome to your dashboard.");
+            } catch (error) {
+                console.error("Signup Error:", error);
+                showModal(`Signup failed: ${error.message}`, true);
+            }
+        }
+
+        async function handleLogin(event) {
+            event.preventDefault();
+            if (!auth) {
+                showModal("Login error: Auth service not ready.", true);
+                return;
+            }
+            
+            const email = $('#login-email').value;
+            const password = $('#login-password').value;
+
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                // Auth listener will handle the rest
+            } catch (error) {
+                console.error("Login Error:", error);
+                showModal(`Login failed: ${error.message}`, true);
+            }
+        }
+
+        async function handleLogout() {
+            if (!auth) return;
+            try {
+                await signOut(auth);
+                // Auth listener will handle redirecting to home page
+            } catch (error) {
+                console.error("Logout Error:", error);
+                showModal(`Logout failed: ${error.message}`, true);
+            }
+        }
+        
+        // --- 7. API TESTER LOGIC ---
+        async function handleApiTest(event) {
+            event.preventDefault();
+            const testResultDiv = $('#api-test-result');
+            const testSubmitButton = $('#api-test-submit');
+
+            testResultDiv.textContent = '';
+            testSubmitButton.disabled = true;
+            testSubmitButton.textContent = 'Testing...';
+            
+            // 1. Get features from form
+            const featureInputs = $$('.feature-input');
+            const features = [];
+            let allValid = true;
+            featureInputs.forEach(input => {
+                const val = parseFloat(input.value);
+                if (isNaN(val)) {
+                    allValid = false;
+                }
+                features.push(val);
+            });
+
+            if (!allValid) {
+                showModal("All 30 features must be valid numbers.", true);
+                testSubmitButton.disabled = false;
+                testSubmitButton.textContent = 'Run Prediction';
+                return;
+            }
+            
+            // 2. Get API Key from the dashboard
+            const apiKey = $('#api-key-display').value;
+            if (!apiKey || apiKey === "Loading your key...") {
+                showModal("API Key not loaded. Please wait or try refreshing.", true);
+                testSubmitButton.disabled = false;
+                testSubmitButton.textContent = 'Run Prediction';
+                return;
+            }
+
+            // 3. Call the Python FastAPI Backend
+            try {
+                const response = await fetch(`${API_SERVER_URL}/predict`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': apiKey 
+                    },
+                    body: JSON.stringify({ features: features })
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.detail || "Prediction failed");
+                }
+
+                // 4. Display result
+                testResultDiv.innerHTML = `
+                    <p class="text-lg">Prediction: <strong class="capitalize ${result.prediction === 'malignant' ? 'text-red-500' : 'text-green-500'}">${result.prediction}</strong></p>
+                    <p>Confidence: <span class="font-medium">${result.confidence}</span></p>
+                `;
+            
+                // 5. Update UI count
+                // The server tracks the real count; this just updates the display
+                if (currentUserData) {
+                    currentUserData.usage += 1; // Increment local copy
+                    updateDashboardUI(); // Update display
+                }
+
+            } catch (error) {
+                console.error("API Call Error:", error);
+                testResultDiv.textContent = `Error: ${error.message}. Is your Python API server running?`;
+                testResultDiv.classList.add('text-red-500');
+            } finally {
+                testSubmitButton.disabled = false;
+                testSubmitButton.textContent = 'Run Prediction';
+            }
+        }
+
+        // --- 8. EVENT LISTENERS (RUN ON PAGE LOAD) ---
+        window.addEventListener('DOMContentLoaded', () => {
+            initializeFirebase(); // Start Firebase
+
+            // --- NAVIGATION EVENT LISTENERS ---
+            // Listener for the main navigation bar (<nav>)
+            $('nav').addEventListener('click', (e) => {
+                const link = e.target.closest('a[data-page]');
+                if (link) {
+                    e.preventDefault();
+                    const page = link.dataset.page;
+                    if (page === 'logout') {
+                        handleLogout();
+                    } else {
+                        showPage(`page-${page}`);
+                    }
+                }
+            });
+            
+            // NEW: Listener for links within the main content area (<main>)
+            // This makes links like "Log In ->" clickable
+            $('main').addEventListener('click', (e) => {
+                const link = e.target.closest('a[data-page]');
+                if (link) {
+                     e.preventDefault();
+                     const page = link.dataset.page;
+                     // Prevent trying to log out from main content links
+                     if (page !== 'logout') { 
+                         showPage(`page-${page}`);
+                     }
+                }
+            });
+            // --- END NAVIGATION EVENT LISTENERS ---
+
+
+            // Auth Forms
+            $('#signup-form').addEventListener('submit', handleSignup);
+            $('#login-form').addEventListener('submit', handleLogin);
+            
+            // Dashboard
+            $('#copy-key-button').addEventListener('click', () => {
+                copyToClipboard($('#api-key-display').value);
+            });
+            // (No regenerate button listener)
+
+            // --- Demo Payment Button ---
+            $('#demo-payment-button').addEventListener('click', () => {
+                const paymentButton = $('#demo-payment-button');
+                paymentButton.textContent = 'Processing...';
+                paymentButton.disabled = true;
+
+                // Fake a 1-second payment delay
+                setTimeout(() => {
+                    $('#payment-container').classList.add('hidden');
+                    $('#signup-form').classList.remove('hidden');
+                    showModal("Demo payment successful! You can now create your account.");
+                }, 1000);
+            });
+
+            // API Tester
+            $('#api-test-form').addEventListener('submit', handleApiTest);
+            $('#load-sample-data').addEventListener('click', () => {
+                const sample = [
+                    17.99, 10.38, 122.8, 1001.0, 0.1184, 0.2776, 0.3001,
+                    0.1471, 0.2419, 0.07871, 1.095, 0.9053, 8.589, 153.4,
+                    0.006399, 0.04904, 0.05373, 0.01587, 0.03003, 0.006193,
+                    25.38, 17.33, 184.6, 2019.0, 0.1622, 0.6656, 0.7119,
+                    0.2654, 0.4601, 0.1189
+                ];
+                $$('.feature-input').forEach((input, index) => {
+                    input.value = sample[index];
+                });
+            });
+
+            // Modal
+            $('#close-modal-button').addEventListener('click', () => {
+                $('#message-modal').classList.add('hidden');
+            });
+
+        });
+
+    </script>
+    
+    <!-- 5. Custom Styles -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827; /* gray-900 */
+        }
+        pre[class*="language-"] {
+            background: #1f2937; /* gray-800 */
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1f2937; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+    </style>
+</head>
+<body class="text-gray-200">
+
+    <!-- Navigation Bar -->
+    <nav class="bg-gray-800 sticky top-0 z-20">
+        <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div class="flex h-16 items-center justify-between">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <svg class="h-8 w-8 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+                        </svg>
+                    </div>
+                    <div class="hidden md:block">
+                        <div class="ml-10 flex items-baseline space-x-4">
+                            <a href="#" data-page="home" class="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white" aria-current="page">Home</a>
+                            <a href="#" data-page="pricing" class="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white">Pricing</a>
+                            <a href="#" data-page="docs" class="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white">API Docs</a>
+                            <a href="#" data-page="dashboard" id="nav-dashboard-link" class="rounded-md px-3 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 hover:text-white hidden">Dashboard</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="hidden md:block">
+                    <div class="ml-4 flex items-center md:ml-6">
+                        <a href="#" id="auth-nav-button" data-page="auth" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+                            Login / Sign Up
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main>
+        <div class="mx-auto max-w-7xl py-6 sm:px-6 lg:px-8">
+            
+            <!-- Page: Home (Landing Page) -->
+            <!-- This is no longer hidden by default, preventing a white screen -->
+            <div id="page-home" class="page">
+                <div class="bg-gray-800 shadow rounded-lg p-6 md:p-10 text-center">
+                    <h1 class="text-4xl font-bold tracking-tight text-white sm:text-6xl">
+                        Breast Cancer Prediction API
+                    </h1>
+                    <p class="mt-6 text-lg leading-8 text-gray-300">
+                        Integrate our powerful, machine-learning-driven prediction API into your application in minutes.
+                    </p>
+                    <div class="mt-10 flex items-center justify-center gap-x-6">
+                        <a href="#" data-page="pricing" class="rounded-md bg-indigo-600 px-3.5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">View Plans</a>
+                        <a href="#" data-page="auth" class="text-sm font-semibold leading-6 text-gray-300">Log In <span aria-hidden="true">&rarr;</span></a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page: Pricing -->
+            <div id="page-pricing" class="page hidden">
+                <div class="bg-gray-800 shadow rounded-lg p-6 md:p-10">
+                    <h2 class="text-3xl font-bold text-center text-white">Simple, Transparent Pricing</h2>
+                    <p class="text-center text-lg text-gray-400 mt-2">One plan to get you started.</p>
+                    
+                    <div class="mt-10 max-w-lg mx-auto">
+                        <!-- Pro Plan -->
+                        <div class="rounded-lg border-2 border-indigo-500 p-6 flex flex-col relative">
+                            <span class="absolute top-0 -translate-y-1/2 bg-indigo-500 px-3 py-1 text-sm text-white rounded-full">Recommended</span>
+                            <h3 class="text-xl font-semibold text-white">Pro Plan</h3>
+                            <p class="text-gray-400 mt-2">For professional applications.</p>
+                            <p class="text-4xl font-bold text-white mt-4">RM5.00<span class="text-lg font-normal text-gray-400"> one-time fee</span></p>
+                            <ul class="mt-6 space-y-2 text-gray-300">
+                                <li>- Lifetime API Key</li>
+                                <li>- 1,000 API Calls / Month</li>
+                                <li>- Community Support</li>
+                            </ul>
+                            <a href="#" data-page="auth" class="mt-auto w-full text-center rounded-md bg-indigo-600 px-3.5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 mt-8">Get Started</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page: Login / Signup -->
+            <div id="page-auth" class="page hidden">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <!-- Login Form -->
+                    <div class="bg-gray-800 shadow rounded-lg p-6 md:p-8">
+                        <h2 class="text-2xl font-bold text-white">Log In</h2>
+                        <form id="login-form" class="mt-6 space-y-4">
+                            <div>
+                                <label for="login-email" class="block text-sm font-medium text-gray-300">Email Address</label>
+                                <input type="email" id="login-email" required class="mt-1 block w-full rounded-md border-gray-700 bg-gray-900 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label for="login-password" class="block text-sm font-medium text-gray-300">Password</label>
+                                <input type="password" id="login-password" required class="mt-1 block w-full rounded-md border-gray-700 bg-gray-900 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                            </div>
+                            <button type="submit" class="w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Log In</button>
+                        </form>
+                    </div>
+                    <!-- Signup Form -->
+                    <div class="bg-gray-800 shadow rounded-lg p-6 md:p-8">
+                        <h2 class="text-2xl font-bold text-white">Create Account</h2>
+                        
+                        <!-- NEW DEMO PAYMENT BUTTON -->
+                        <div id="payment-container" class="mt-6 space-y-4">
+                            <p class="text-gray-300">To create an account and get your API key, please complete the one-time demo payment.</p>
+                            <button id="demo-payment-button" type="button" class="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-500">
+                                Pay RM5.00 (Demo)
+                            </button>
+                        </div>
+
+                        <!-- Sign-up form is now hidden by default -->
+                        <form id="signup-form" class="mt-6 space-y-4 hidden">
+                            <div>
+                                <label for="signup-email" class="block text-sm font-medium text-gray-300">Email Address</label>
+                                <input type="email" id="signup-email" required class="mt-1 block w-full rounded-md border-gray-700 bg-gray-900 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label for="signup-password" class="block text-sm font-medium text-gray-300">Password (min. 6 characters)</label>
+                                <input type="password" id="signup-password" minlength="6" required class="mt-1 block w-full rounded-md border-gray-700 bg-gray-900 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <label for="signup-password-confirm" class="block text-sm font-medium text-gray-300">Confirm Password</label>
+                                <input type="password" id="signup-password-confirm" minlength="6" required class="mt-1 block w-full rounded-md border-gray-700 bg-gray-900 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500">
+                            </div>
+                            <button type="submit" class="w-full rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Create My Account</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page: Dashboard (Logged-in users only) -->
+            <div id="page-dashboard" class="page hidden space-y-6">
+                <h1 class="text-3xl font-bold text-white">Your Dashboard</h1>
+                
+                <!-- API Key Management -->
+                <div class="bg-gray-800 shadow rounded-lg p-6">
+                    <h2 class="text-xl font-semibold text-white">Your API Key</h2>
+                    <p class="text-gray-400 mt-1">Use this key to authenticate your API requests. This is your only key.</p>
+                    <div class="mt-4 flex gap-2">
+                        <input type="text" id="api-key-display" readonly class="flex-1 rounded-md border-gray-700 bg-gray-900 text-gray-400 shadow-sm focus:border-indigo-500 focus:ring-indigo-500" value="Loading your key...">
+                        <button id="copy-key-button" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-medium text-white hover:bg-gray-500">Copy</button>
+                        <!-- Regenerate Button is GONE -->
+                    </div>
+                </div>
+
+                <!-- API Usage -->
+                <div class="bg-gray-800 shadow rounded-lg p-6">
+                    <h2 class="text-xl font-semibold text-white">API Usage</h2>
+                    <p class="text-gray-400 mt-1">You have made <strong id="api-usage-count" class="text-indigo-400">0</strong> API calls this billing cycle.</p>
+                </div>
+
+                <!-- API Tester -->
+                <div class="bg-gray-800 shadow rounded-lg p-6">
+                    <h2 class="text-xl font-semibold text-white">Live API Tester</h2>
+                    <p class="text-gray-400 mt-1">Test the prediction endpoint right from your browser.</p>
+                    <button id="load-sample-data" class="mt-2 text-sm text-indigo-400 hover:text-indigo-300">Load Sample Malignant Data</button>
+
+                    <form id="api-test-form" class="mt-4 space-y-4">
+                        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                            <!-- Generate 30 feature inputs -->
+                            <script>
+                                const featureNames = [
+                                    'radius_mean', 'texture_mean', 'perimeter_mean', 'area_mean', 'smoothness_mean',
+                                    'compactness_mean', 'concavity_mean', 'concave_points_mean', 'symmetry_mean', 'fractal_dimension_mean',
+                                    'radius_se', 'texture_se', 'perimeter_se', 'area_se', 'smoothness_se',
+                                    'compactness_se', 'concavity_se', 'concave_points_se', 'symmetry_se', 'fractal_dimension_se',
+                                    'radius_worst', 'texture_worst', 'perimeter_worst', 'area_worst', 'smoothness_worst',
+                                    'compactness_worst', 'concavity_worst', 'concave_points_worst', 'symmetry_worst', 'fractal_dimension_worst'
+                                ];
+                                for(let i = 0; i < 30; i++) {
+                                    document.write(`
+                                        <div>
+                                            <label for="feature-${i}" class="block text-xs font-medium text-gray-400 truncate" title="${featureNames[i]}">Feat ${i+1}: ${featureNames[i]}</label>
+                                            <input type="number" step="any" id="feature-${i}" name="feature-${i}" class="feature-input mt-1 block w-full rounded-md border-gray-700 bg-gray-900 text-white shadow-sm focus:border-indigo-500 focus:ring-indigo-500 text-sm" value="0">
+                                        </div>
+                                    `);
+                                }
+                            </script>
+                        </div>
+                        <button id="api-test-submit" type="submit" class="rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-500">Run Prediction</button>
+                    </form>
+                    <div id="api-test-result" class="mt-4 rounded-md bg-gray-900 p-4 min-h-[50px] font-mono">
+                        <!-- Results will be shown here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- NEW: Page: API Documentation -->
+            <div id="page-docs" class="page hidden">
+                <div class="space-y-8 rounded-lg bg-gray-800 shadow p-6 md:p-10">
+
+                    <!-- Introduction -->
+                    <section>
+                        <h2 class="text-3xl font-bold text-white">How to use your API Key</h2>
+                        <p class="mt-4 text-lg text-gray-300">
+                            Welcome, developer! This guide will show you how to integrate our Breast Cancer Prediction API directly into your own applications.
+                        </p>
+                    </section>
+            
+                    <!-- Authentication -->
+                    <section>
+                        <h3 class="text-2xl font-semibold text-white border-b border-gray-700 pb-2">1. Authentication</h3>
+                        <p class="mt-4 text-gray-300">
+                            To use the API, you must include your unique API key in every request. You can find your key on your <a href="#" data-page="dashboard" class="text-indigo-400 hover:underline">Dashboard</a>.
+                        </p>
+                        <p class="mt-2 text-gray-300">
+                            The API key must be sent as an HTTP request header called <code class="bg-gray-700 text-sm font-medium text-indigo-300 p-1 rounded">X-API-Key</code>.
+                        </p>
+                        <pre class="mt-2 rounded-md"><code class="language-http">X-API-Key: YOUR_API_KEY_GOES_HERE</code></pre>
+                    </section>
+            
+                    <!-- Endpoint -->
+                    <section>
+                        <h3 class="text-2xl font-semibold text-white border-b border-gray-700 pb-2">2. Endpoint</h3>
+                        <p class="mt-4 text-gray-300">
+                            All predictions are made using a single endpoint. You must use the <code class="bg-gray-700 text-sm font-medium text-red-300 p-1 rounded">POST</code> method.
+                        </p>
+                        <p class="mt-2 text-gray-300">
+                            **API URL:** <span class="block mt-1 p-2 rounded-md bg-gray-700 font-mono text-sm">
+                                 https://my-api-project-kvz4.onrender.com/predict
+                            </span>
+                        </p>
+                       
+                    </section>
+            
+                    <!-- Request Body -->
+                    <section>
+                        <h3 class="text-2xl font-semibold text-white border-b border-gray-700 pb-2">3. Request Body</h3>
+                        <p class="mt-4 text-gray-300">
+                            Your request must be sent as JSON and contain a single key, <code class="bg-gray-700 text-sm font-medium text-indigo-300 p-1 rounded">"features"</code>, which is an array of 30 floating-point numbers.
+                        </p>
+                        <pre class="mt-2 rounded-md"><code class="language-json">
+{
+  "features": [
+    17.99, 10.38, 122.8, 1001.0, 0.1184, 0.2776, 0.3001,
+    0.1471, 0.2419, 0.07871, 1.095, 0.9053, 8.589, 153.4,
+    0.006399, 0.04904, 0.05373, 0.01587, 0.03003, 0.006193,
+    25.38, 17.33, 184.6, 2019.0, 0.1622, 0.6656, 0.7119,
+    0.2654, 0.4601, 0.1189
+  ]
+}
+                        </code></pre>
+                    </section>
+            
+                    <!-- Code Examples -->
+                    <section>
+                        <h3 class="text-2xl font-semibold text-white border-b border-gray-700 pb-2">4. Code Examples</h3>
+                        
+                        <!-- Python Example -->
+                        <h4 class="text-xl font-medium text-white mt-4">Python (using <code class="bg-gray-700 text-sm">requests</code>)</h4>
+                        <pre class="mt-2 rounded-md"><code class="language-python">
+import requests
+import json
+
+MY_API_KEY = "YOUR_API_KEY_GOES_HERE"
+API_URL = "https://my-api-project-kvz4.onrender.com/predict" # Change to your public URL
+
+features_data = {
+  "features": [
+    17.99, 10.38, 122.8, 1001.0, 0.1184, 0.2776, 0.3001,
+    0.1471, 0.2419, 0.07871, 1.095, 0.9053, 8.589, 153.4,
+    0.006399, 0.04904, 0.05373, 0.01587, 0.03003, 0.006193,
+    25.38, 17.33, 184.6, 2019.0, 0.1622, 0.6656, 0.7119,
+    0.2654, 0.4601, 0.1189
+  ]
+}
+
+headers = {
+    "Content-Type": "application/json",
+    "X-API-Key": MY_API_KEY
+}
+
+response = requests.post(API_URL, headers=headers, data=json.dumps(features_data))
+
+if response.status_code == 200:
+    print("Success:", response.json())
+else:
+    print("Error:", response.status_code, response.json())
+                        </code></pre>
+            
+                        <!-- JavaScript Example -->
+                        <h4 class="text-xl font-medium text-white mt-6">JavaScript (using <code class="bg-gray-700 text-sm">fetch</code>)</h4>
+                        <pre class="mt-2 rounded-md"><code class="language-javascript">
+const MY_API_KEY = "YOUR_API_KEY_GOES_HERE";
+const API_URL = "https://my-api-project-kvz4.onrender.com/predict"; // Change to your public URL
+
+const features_data = {
+  features: [
+    17.99, 10.38, 122.8, 1001.0, 0.1184, 0.2776, 0.3001,
+    0.1471, 0.2419, 0.07871, 1.095, 0.9053, 8.589, 153.4,
+    0.006399, 0.04904, 0.05373, 0.01587, 0.03003, 0.006193,
+    25.38, 17.33, 184.6, 2019.0, 0.1622, 0.6656, 0.7119,
+    0.2654, 0.4601, 0.1189
+  ]
+};
+
+async function getPrediction() {
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': MY_API_KEY
+      },
+      body: JSON.stringify(features_data)
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("API Error:", data.detail);
+    } else {
+      console.log("Success:", data);
+    }
+  } catch (error) {
+    console.error("Connection Error:", error);
+  }
+}
+
+getPrediction();
+                        </code></pre>
+                    </section>
+            
+                    <!-- Responses -->
+                    <section>
+                        <h3 class="text-2xl font-semibold text-white border-b border-gray-700 pb-2">5. Responses</h3>
+                        
+                        <h4 class="text-xl font-medium text-green-400 mt-4">Success (Code 200)</h4>
+                        <p class="text-gray-300">A successful request will return the prediction and confidence score.</p>
+                        <pre class="mt-2 rounded-md"><code class="language-json">
+{
+  "prediction": "malignant",
+  "confidence": "1.0000"
+}
+                        </code></pre>
+            
+                        <h4 class="text-xl font-medium text-red-400 mt-6">Error (Code 401, 403, etc.)</h4>
+                        <p class="text-gray-300">If your key is missing, invalid, or your account is not active, you will receive an error.</p>
+                        <pre class="mt-2 rounded-md"><code class="language-json">
+{
+  "detail": "Invalid API Key"
+}
+                        </code></pre>
+                        <pre class="mt-2 rounded-md"><code class="language-json">
+{
+  "detail": "X-API-Key header is missing"
+}
+                        </code></pre>
+                    </section>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- Message Modal -->
+    <div id="message-modal" class="fixed inset-0 z-30 flex items-center justify-center bg-black bg-opacity-50 hidden">
+        <div class="w-full max-w-md transform overflow-hidden rounded-lg bg-gray-800 p-6 text-left align-middle shadow-xl transition-all">
+            <h3 id="modal-title" class="text-lg font-medium leading-6">Success</h3>
+            <div class="mt-2">
+                <p id="modal-message" class="text-sm text-gray-300">
+                    Your message goes here.
+                </p>
+            </div>
+            <div class="mt-4">
+                <button id="close-modal-button" type="button" class="inline-flex justify-center rounded-md border border-transparent bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+                    Got it, thanks!
+                </button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+
